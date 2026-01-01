@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Optional: Add the Vazirmatn font for better Farsi support */
+@import url('[https://fonts.googleapis.com/css2?family=Vazirmatn:wght@100..900&display=swap](https://fonts.googleapis.com/css2?family=Vazirmatn:wght@100..900&display=swap)');
+
+body {
+  font-family: 'Vazirmatn', sans-serif;
+}
