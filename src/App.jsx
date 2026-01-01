@@ -23,7 +23,7 @@ import { getFirestore, doc, setDoc, onSnapshot, collection } from 'firebase/fire
 
 // --- API Configuration ---
 // Best Practice: Load from Environment Variable (Vite/Vercel)
-// If running locally without .env, you can temporarily paste the string here, but remove before committing to GitHub.
+// This keeps your key safe when pushing to GitHub.
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY || ""; 
 
 // --- Firebase Configuration ---
