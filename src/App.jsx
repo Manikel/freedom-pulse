@@ -22,17 +22,32 @@ import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot, collection } from 'firebase/firestore';
 
 // --- API Configuration ---
-// Best Practice: Load from Environment Variable (Vite/Vercel)
-// This keeps your key safe when pushing to GitHub.
-const apiKey = import.meta.env.VITE_GEMINI_API_KEY || ""; 
+// Safe access to import.meta.env
+const getEnvVar = (key) => {
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.env) {
+      return import.meta.env[key] || "";
+    }
+  } catch (e) {
+    return "";
+  }
+  return "";
+};
+
+const apiKey = getEnvVar('VITE_GEMINI_API_KEY');
 
 // --- Firebase Configuration ---
-// Best Practice: Load from Environment Variable as a JSON string
-// On Vercel, you will paste the full JSON config into a variable named VITE_FIREBASE_CONFIG
-const envConfig = import.meta.env.VITE_FIREBASE_CONFIG;
-const firebaseConfig = envConfig 
-  ? JSON.parse(envConfig) 
-  : (typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null);
+let firebaseConfig = null;
+try {
+  const envConfig = getEnvVar('VITE_FIREBASE_CONFIG');
+  if (envConfig) {
+    firebaseConfig = JSON.parse(envConfig);
+  } else if (typeof __firebase_config !== 'undefined') {
+    firebaseConfig = JSON.parse(__firebase_config);
+  }
+} catch (e) {
+  console.error("Firebase Config Parsing Error:", e);
+}
 
 // Initialize Firebase (Conditional for safety)
 let db, auth;
@@ -42,7 +57,7 @@ if (firebaseConfig) {
     auth = getAuth(app);
     db = getFirestore(app);
   } catch (e) {
-    console.warn("Firebase init failed (likely missing config). Falling back to local mode.");
+    console.warn("Firebase init failed. Falling back to local mode.", e);
   }
 }
 
@@ -92,7 +107,7 @@ async function callGemini(prompt, systemInstruction = "", useSearch = false) {
 export default function App() {
   // --- State Management ---
   const [totalActive, setTotalActive] = useState(0);
-  const [displayNumber, setDisplayNumber] = useState(0); // For smooth animation
+  const [displayNumber, setDisplayNumber] = useState(0); 
   const [trend, setTrend] = useState('stable'); 
   const [headlines, setHeadlines] = useState(["در حال همگام‌سازی..."]);
   const [currentHeadlineIndex, setCurrentHeadlineIndex] = useState(0);
@@ -108,7 +123,7 @@ export default function App() {
 
   // --- Effects ---
 
-  // 1. Firebase Auth (Only if configured)
+  // 1. Firebase Auth
   useEffect(() => {
     if (!auth) return;
     const unsubscribe = onAuthStateChanged(auth, setUser);
@@ -116,7 +131,7 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // 2. Central Data Sync (Read from Firestore)
+  // 2. Central Data Sync
   useEffect(() => {
     if (!db || !user) return;
 
@@ -125,7 +140,9 @@ export default function App() {
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
-        setTotalActive(data.total || 0);
+        // Ensure valid number to prevent glitches
+        const validTotal = typeof data.total === 'number' && !isNaN(data.total) ? data.total : 0;
+        setTotalActive(validTotal);
         setTrend(data.trend || 'stable');
         if (data.headlines && Array.isArray(data.headlines)) {
           setHeadlines(data.headlines);
@@ -135,7 +152,7 @@ export default function App() {
         }
         setApiStatus('success');
       } else {
-        setLastUpdated(new Date(0)); // Force update
+        setLastUpdated(new Date(0)); 
       }
     }, (error) => {
       console.error("Firestore Sync Error:", error);
@@ -144,20 +161,21 @@ export default function App() {
     return () => unsubscribe();
   }, [user]);
 
-  // 3. Gradual Number Animation (Visual Interpolation)
+  // 3. Robust Animation Loop
   useEffect(() => {
     let animationFrame;
     const animate = () => {
       setDisplayNumber(prev => {
-        const diff = totalActive - prev;
-        // If difference is small, snap to target
-        if (Math.abs(diff) < 1) return totalActive;
+        // Safety check to prevent NaN
+        const target = typeof totalActive === 'number' && !isNaN(totalActive) ? totalActive : 0;
+        const current = typeof prev === 'number' && !isNaN(prev) ? prev : 0;
         
-        // Very slow visual catch-up (2% per frame)
-        // This makes the numbers "glide" rather than tick
-        return prev + diff * 0.02; 
+        const diff = target - current;
+        if (Math.abs(diff) < 1) return target;
+        return current + diff * 0.05; // 5% approach speed
       });
       
+      // Keep running if there's a difference
       if (Math.abs(totalActive - displayNumber) > 0.5) {
         animationFrame = requestAnimationFrame(animate);
       }
@@ -166,7 +184,7 @@ export default function App() {
     return () => cancelAnimationFrame(animationFrame);
   }, [totalActive, displayNumber]);
 
-  // 4. Data Fetching Logic (Hybrid: Firestore Master OR Local Fallback)
+  // 4. Data Fetching
   useEffect(() => {
     const checkAndRunUpdate = async () => {
       const now = new Date();
@@ -174,7 +192,6 @@ export default function App() {
       const needsUpdate = !lastUpdated || (now - lastUpdated > stalenessThreshold);
       const isLocalMode = !db;
 
-      // Only the "Master" updates (if local mode, or if data is stale and we are first to check)
       if (needsUpdate || isLocalMode) {
         if (!isLocalMode && !user) return; 
 
@@ -182,58 +199,41 @@ export default function App() {
         
         const prompt = `
           You are a REAL-TIME protest monitor for Iran.
-          TASK: Search widely for protests, strikes, slogans, or gatherings in Iran (last 24h).
+          TASK: Search widely for protests in Iran (last 24h).
+          SOURCES: Iran International, Manoto, @1500tasvir, @PahlaviReza.
+          EXCLUDE: IR/Govt sites.
           
-          SOURCES: Iran International, Manoto, @1500tasvir, @PahlaviReza, @Vahid, @IranIntl.
-          EXCLUDE: IR/Govt propaganda sites.
-          
-          METHODOLOGY FOR ESTIMATION (CRITICAL):
-          - Assume significant UNDERREPORTING.
-          - If reports say "large crowds", estimate 5,000-20,000.
+          METHODOLOGY:
+          - If "large crowds", estimate 5,000-20,000.
           - If "scattered gatherings", estimate 500-2,000.
           - Do NOT return 0 unless absolute silence.
           
-          OUTPUT:
-          1. "total": Number.
-          2. "trend": "up", "down", "stable".
-          3. "headlines": 5 distinct Farsi headlines.
-          
-          Return pure JSON.
+          OUTPUT JSON: { "total": number, "trend": "string", "headlines": ["string", ...] }
         `;
 
         try {
           const jsonStr = await callGemini(prompt, "You are a data extractor. Return ONLY raw JSON.", true);
-          const data = JSON.parse(jsonStr);
+          let data;
+          try {
+             data = JSON.parse(jsonStr);
+          } catch(err) {
+             console.error("JSON Parse failed", err);
+             return; 
+          }
           
-          // --- HEAVY STABILIZATION ALGORITHM ---
-          // Goal: Prevent drastic jumps (e.g. 12k -> 500)
-          let incomingTotal = data.total;
+          // Heavy Stabilization
+          let incomingTotal = typeof data.total === 'number' ? data.total : 0;
           let stabilizedTotal = incomingTotal;
 
           if (totalActive > 0) {
-             const difference = incomingTotal - totalActive;
-             const percentChange = Math.abs(difference / totalActive);
-
              if (incomingTotal < totalActive) {
-                // CASE: Dropping
-                if (percentChange > 0.2) {
-                   // If dropping more than 20%, clamp it. 
-                   // Only allow a max 5% drop per update cycle to simulate "slow dispersion"
-                   stabilizedTotal = Math.round(totalActive * 0.95);
-                } else {
-                   // Small drop, allow it but blend 80% old / 20% new
-                   stabilizedTotal = Math.round(totalActive * 0.8 + incomingTotal * 0.2);
-                }
+                // Drop protection: max 5% drop
+                stabilizedTotal = Math.max(incomingTotal, Math.round(totalActive * 0.95));
              } else {
-                // CASE: Rising
-                // Allow rising faster than dropping, but still smooth (90% old / 10% new)
-                // This avoids spikes from single search anomalies
+                // Rise smoothing: 10% weight to new
                 stabilizedTotal = Math.round(totalActive * 0.9 + incomingTotal * 0.1);
              }
-          }
-          
-          // Ensure we don't get stuck at 0 if real news comes in
-          if (totalActive === 0 && incomingTotal > 0) {
+          } else if (incomingTotal > 0) {
              stabilizedTotal = incomingTotal;
           }
 
@@ -266,7 +266,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [user, lastUpdated, totalActive]); 
 
-  // 5. Ticker Rotation
+  // 5. Ticker
   useEffect(() => {
     const interval = setInterval(() => {
       setCurrentHeadlineIndex(prev => (prev + 1) % headlines.length);
@@ -274,16 +274,16 @@ export default function App() {
     return () => clearInterval(interval);
   }, [headlines]);
 
-  // --- Calculations ---
+  // --- Visuals ---
   const getPulseSpeed = () => {
-    if (totalActive === 0) return '4s'; 
+    if (totalActive <= 0) return '4s'; 
     const baseSpeed = 2.5;
     const maxPeople = 100000; 
     const speed = Math.max(0.3, baseSpeed - ((totalActive / maxPeople) * 2));
     return `${speed}s`;
   };
 
-  const targetPop = 3100000; // 3.5% of 89M
+  const targetPop = 3100000; 
   const displayProbability = totalActive > 0 
     ? Math.min(Math.round((Math.log10(totalActive) / Math.log10(targetPop)) * 100 * 0.6), 99) 
     : 0;
@@ -362,7 +362,7 @@ export default function App() {
 
           {/* THE BIG NUMBER & INTERACTIVE PULSE */}
           <div className="relative py-4 flex flex-col justify-center items-center">
-            {/* Interactive Pulse - Reduced Opacity */}
+            {/* Interactive Pulse */}
             <div 
               className={`absolute w-[250px] h-[250px] md:w-[350px] md:h-[350px] rounded-full blur-[80px] transition-all ${isDarkMode ? 'bg-red-600' : 'bg-red-500'}`}
               style={{ 
